@@ -8,11 +8,12 @@ import {
   chromeExecutablePath,
   edgeExecutablePath,
 } from '@browserless.io/browserless';
-import playwright, { Page } from 'playwright-core';
+import playwright from 'playwright-core';
 import { Duplex } from 'stream';
 import { EventEmitter } from 'events';
 import httpProxy from 'http-proxy';
 import path from 'path';
+import { chromium, Page as PatchrightPage, BrowserServer } from 'patchright';
 
 enum PlaywrightBrowserTypes {
   chromium = 'chromium',
@@ -27,12 +28,12 @@ class BasePlaywright extends EventEmitter {
   protected logger: Logger;
   protected socket: Duplex | null = null;
   protected proxy = httpProxy.createProxyServer();
-  protected browser: playwright.BrowserServer | null = null;
+  protected browser: BrowserServer | playwright.BrowserServer | null = null;
   protected browserWSEndpoint: string | null = null;
   protected playwrightBrowserType: PlaywrightBrowserTypes =
     PlaywrightBrowserTypes.chromium;
-  protected executablePath = () =>
-    playwright[this.playwrightBrowserType].executablePath();
+  protected executablePath = () => chromium.executablePath();
+  protected usesPatchright = true;
 
   constructor({
     config,
@@ -57,19 +58,68 @@ class BasePlaywright extends EventEmitter {
   }
 
   protected makeLaunchOptions(opts: BrowserServerOptions) {
-    // Strip headless=old as it'll cause issues with newer Chromium
-    const args = (opts.args ?? []).filter((a) => !a.includes('--headless=old'));
+    if (this.usesPatchright) {
+      // Strip headless=old as it'll cause issues with newer Chromium
+      const args = (opts.args ?? []).filter((a) => !a.includes('--headless=old'));
 
-    if (!args.some((a) => a.startsWith('--headless'))) {
-      args.push('--headless=new');
+      if (!args.some((a) => a.startsWith('--headless'))) {
+        args.push('--headless=new');
+      }
+
+      // Add stealth-related arguments to avoid detection
+      const stealthArgs = [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-automation',
+        '--disable-features=AutomationControlled,AutomationDriver,HtmlImports,IsolateOrigins,site-per-process',
+        '--enable-features=NetworkService,NetworkServiceInProcess',
+        '--no-default-browser-check',
+        '--no-first-run',
+        '--disable-infobars',
+        '--window-size=1920,1080',
+        '--force-device-scale-factor=1',
+        '--disable-notifications',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-breakpad',
+        '--disable-component-extensions-with-background-pages',
+        '--disable-dev-shm-usage',
+        '--disable-ipc-flooding-protection',
+        '--disable-renderer-backgrounding',
+        '--force-color-profile=srgb',
+        '--metrics-recording-only',
+        '--hide-scrollbars',
+        '--mute-audio',
+        `--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36`,
+        // Permissions handling
+        '--use-fake-ui-for-media-stream',
+        '--use-fake-device-for-media-stream',
+        '--autoplay-policy=no-user-gesture-required',
+        '--enable-automation=false',
+        '--deny-permission-prompts',
+        '--allow-running-insecure-content',
+        '--ignore-certificate-errors',
+        '--ignore-certificate-errors-spki-list=*'
+      ];
+
+      return {
+        ...opts,
+        channel: 'chrome',
+        args: [
+          ...stealthArgs,
+          ...args,
+          this.userDataDir ? `--user-data-dir=${this.userDataDir}` : '',
+        ].filter(Boolean),
+        executablePath: this.executablePath(),
+      };
     }
 
+    // For non-chromium browsers, return standard options
     return {
       ...opts,
       args: [
-        ...args,
+        ...(opts.args || []),
         this.userDataDir ? `--user-data-dir=${this.userDataDir}` : '',
-      ],
+      ].filter(Boolean),
       executablePath: this.executablePath(),
     };
   }
@@ -90,7 +140,9 @@ class BasePlaywright extends EventEmitter {
       this.socket?.destroy();
       this.emit('close');
       this.cleanListeners();
-      this.browser.close();
+      if (this.usesPatchright) {
+        this.browser.close();
+      }
       this.running = false;
       this.browser = null;
       this.browserWSEndpoint = null;
@@ -113,11 +165,15 @@ class BasePlaywright extends EventEmitter {
     );
   }
 
-  public async newPage(): Promise<Page> {
+  public async newPage(): Promise<PatchrightPage | playwright.Page> {
     if (!this.browser || !this.browserWSEndpoint) {
       throw new ServerError(
         `${this.constructor.name} hasn't been launched yet!`,
       );
+    }
+    if (this.usesPatchright) {
+      const browser = await chromium.connect(this.browserWSEndpoint);
+      return await browser.newPage();
     }
     const browser = await playwright[this.playwrightBrowserType].connect(
       this.browserWSEndpoint,
@@ -127,14 +183,20 @@ class BasePlaywright extends EventEmitter {
 
   public async launch(
     laucherOpts: BrowserLauncherOptions,
-  ): Promise<playwright.BrowserServer> {
+  ): Promise<BrowserServer | playwright.BrowserServer> {
     const { options, pwVersion } = laucherOpts;
     this.logger.info(`Launching ${this.constructor.name} Handler`);
 
     const opts = this.makeLaunchOptions(options);
-    const versionedPw = await this.config.loadPwVersion(pwVersion!);
-    const browser =
-      await versionedPw[this.playwrightBrowserType].launchServer(opts);
+    
+    let browser;
+    if (this.usesPatchright) {
+      browser = await chromium.launchServer(opts);
+    } else {
+      const versionedPw = await this.config.loadPwVersion(pwVersion!);
+      browser = await versionedPw[this.playwrightBrowserType].launchServer(opts);
+    }
+    
     const browserWSEndpoint = browser.wsEndpoint();
 
     this.logger.info(
@@ -217,44 +279,29 @@ class BasePlaywright extends EventEmitter {
 
 export class ChromiumPlaywright extends BasePlaywright {
   protected playwrightBrowserType = PlaywrightBrowserTypes.chromium;
+  protected usesPatchright = true;
 }
 
 export class ChromePlaywright extends ChromiumPlaywright {
   protected executablePath = () => chromeExecutablePath();
   protected playwrightBrowserType = PlaywrightBrowserTypes.chromium;
+  protected usesPatchright = true;
 }
 
 export class EdgePlaywright extends ChromiumPlaywright {
   protected executablePath = () => edgeExecutablePath();
   protected playwrightBrowserType = PlaywrightBrowserTypes.chromium;
+  protected usesPatchright = true;
 }
 
 export class FirefoxPlaywright extends BasePlaywright {
   protected playwrightBrowserType = PlaywrightBrowserTypes.firefox;
-
-  protected makeLaunchOptions(opts: BrowserServerOptions) {
-    return {
-      ...opts,
-      args: [
-        ...(opts.args || []),
-        this.userDataDir ? `-profile=${this.userDataDir}` : '',
-      ],
-      executablePath: this.executablePath(),
-    };
-  }
+  protected usesPatchright = false;
+  protected executablePath = () => playwright.firefox.executablePath();
 }
 
 export class WebKitPlaywright extends BasePlaywright {
   protected playwrightBrowserType = PlaywrightBrowserTypes.webkit;
-
-  protected makeLaunchOptions(opts: BrowserServerOptions) {
-    return {
-      ...opts,
-      args: [
-        ...(opts.args || []),
-        this.userDataDir ? `-profile=${this.userDataDir}` : '',
-      ],
-      executablePath: this.executablePath(),
-    };
-  }
+  protected usesPatchright = false;
+  protected executablePath = () => playwright.webkit.executablePath();
 }

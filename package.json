@@ -57,6 +57,7 @@
     "http-proxy": "^1.18.1",
     "lighthouse": "^12.4.0",
     "micromatch": "^4.0.8",
+    "patchright": "^1.50.1",
     "playwright-1.47": "npm:playwright-core@1.47.2",
     "playwright-1.48": "npm:playwright-core@1.48.2",
     "playwright-1.49": "npm:playwright-core@1.49.1",
@@ -66,6 +67,7 @@
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "queue": "^7.0.0",
+    "rebrowser-patches": "^1.0.17",
     "systeminformation": "^5.25.11",
     "tar-fs": "^3.0.8"
   },

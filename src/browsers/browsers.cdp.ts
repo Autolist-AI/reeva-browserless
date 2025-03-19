@@ -214,11 +214,49 @@ export class ChromiumCDP extends EventEmitter {
       }
     }
 
+    // Enhanced stealth mode args - always enable these to avoid detection
+    const stealthArgs = [
+      '--disable-blink-features=AutomationControlled',
+      '--disable-automation',
+      '--disable-features=AutomationControlled,IsolateOrigins,site-per-process',
+      '--enable-features=NetworkService,NetworkServiceInProcess',
+      '--no-default-browser-check',
+      '--no-first-run',
+      '--disable-infobars',
+      '--window-size=1920,1080',
+      '--force-device-scale-factor=1',
+      '--disable-notifications',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-breakpad',
+      '--disable-component-extensions-with-background-pages',
+      '--disable-dev-shm-usage',
+      '--disable-extensions',
+      '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+      '--disable-ipc-flooding-protection',
+      '--disable-renderer-backgrounding',
+      '--force-color-profile=srgb',
+      '--metrics-recording-only',
+      '--hide-scrollbars',
+      '--mute-audio',
+      `--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${(process.versions.chrome || '108').split('.')[0]}.0.0.0 Safari/537.36`,
+      // Permissions handling
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      '--autoplay-policy=no-user-gesture-required',
+      '--enable-automation=false',
+      '--deny-permission-prompts',
+      '--allow-running-insecure-content',
+      '--ignore-certificate-errors',
+      '--ignore-certificate-errors-spki-list=*'
+    ];
+
     const finalOptions = {
       ...options,
       args: [
         `--remote-debugging-port=${this.port}`,
         `--no-sandbox`,
+        ...stealthArgs,
         ...(options.args || []),
         this.userDataDir ? `--user-data-dir=${this.userDataDir}` : '',
       ].filter((_) => !!_),
@@ -247,6 +285,59 @@ export class ChromiumCDP extends EventEmitter {
     this.logger.info(
       `${this.constructor.name} is running on ${this.browserWSEndpoint}`,
     );
+
+    // Apply additional stealth evasions to all pages
+    this.browser.on('targetcreated', async (target) => {
+      try {
+        if (target.type() === 'page') {
+          const page = await target.page();
+          if (page) {
+            // Add our custom stealth script to every new page
+            await page.evaluateOnNewDocument(
+              // Load content from stealth evasions script
+              require('fs').readFileSync('/usr/local/share/browserless/preload-scripts/stealth-evasions.js', 'utf8')
+            );
+
+            // Apply additional page-level evasion techniques
+            await page.evaluateOnNewDocument(`
+              // Override permissions API
+              if (navigator.permissions) {
+                const originalQuery = navigator.permissions.query;
+                navigator.permissions.query = function(parameters) {
+                  return Promise.resolve({
+                    state: parameters.name === 'notifications' ? 'denied' : 'granted',
+                    onchange: null,
+                    addEventListener: function(){},
+                    removeEventListener: function(){},
+                    dispatchEvent: function(){ return true; }
+                  });
+                };
+              }
+              
+              // Prevent iframe detection
+              Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+                get: function() {
+                  const frame = this;
+                  const win = window;
+                  try {
+                    if (frame.src && frame.src.indexOf('//') !== -1 && 
+                        win.location.host !== new URL(frame.src).host) {
+                      throw new Error("Cross-origin access denied");
+                    }
+                    return frame.contentWindow;
+                  } catch (e) {
+                    const mockWindow = { closed: false, parent: window };
+                    return mockWindow;
+                  }
+                }
+              });
+            `);
+          }
+        }
+      } catch (error) {
+        this.logger.error(`Error applying stealth evasions: ${error}`);
+      }
+    });
 
     return this.browser;
   }
