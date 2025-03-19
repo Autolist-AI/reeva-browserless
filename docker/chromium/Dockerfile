@@ -1,6 +1,6 @@
 ARG VERSION=latest
-FROM ghcr.io/browserless/base:$VERSION
-LABEL org.opencontainers.image.source https://github.com/browserless/browserless
+FROM --platform=linux/amd64 ghcr.io/browserless/base:$VERSION
+LABEL org.opencontainers.image.source=https://github.com/browserless/browserless
 LABEL description="Enhanced anti-detection Chromium build with advanced stealth capabilities"
 
 COPY fonts/* /usr/share/fonts/truetype/
